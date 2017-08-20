@@ -79,6 +79,100 @@ for (it->SeekToLast(); it->Valid(); it->Prev()) {
 }
 ```
 
+### 快照
+快照可以查看所有键值的储存情况
+```
+leveldb::ReadOptions options;
+options.snapshot = db->GetSnapshot();
+... apply some updates to db ...
+leveldb::Iterator* iter = db->NewIterator(options); //使用iter来查看快照
+... read using iter to view the state when the snapshot was created ...
+delete iter;
+db->ReleaseSnapshot(options.snapshot); //不需要快照时应释放
+```
+
+### 切片（slice）
+切片是包含长度和指向外部字节数组的指针的数据结构，比string便宜
+slice可和string和谐转换
+```
+leveldb::Slice s1 = "hello"; //String -> Slice
+
+std::string str("world");
+leveldb::Slice s2 = str;
+```
+```
+std::string str = s1.ToString(); //Slice -> String
+assert(str == std::string("hello"));
+```
+
+### 比较
+键的排序按照字典的顺序，也可自行定义比较方法
+比如键值有两位数，由第一位来排序，建立类来表达这些原则
+```
+class TwoPartComparator : public leveldb::Comparator {
+ public:
+  // Three-way comparison function:
+  //   if a < b: negative result
+  //   if a > b: positive result
+  //   else: zero result
+  int Compare(const leveldb::Slice& a, const leveldb::Slice& b) const {
+    int a1, a2, b1, b2;
+    ParseKey(a, &a1, &a2);
+    ParseKey(b, &b1, &b2);
+    if (a1 < b1) return -1;
+    if (a1 > b1) return +1;
+    if (a2 < b2) return -1;
+    if (a2 > b2) return +1;
+    return 0;
+  }
+
+  // Ignore the following methods for now:
+  const char* Name() const { return "TwoPartComparator"; }
+  void FindShortestSeparator(std::string*, const leveldb::Slice&) const {}
+  void FindShortSuccessor(std::string*) const {}
+};
+```
+接着使用自定义比较来创建一个数据库：
+```
+TwoPartComparator cmp;
+leveldb::DB* db;
+leveldb::Options options;
+options.create_if_missing = true;
+options.comparator = &cmp;
+leveldb::Status status = leveldb::DB::Open(options, "/tmp/testdb", &db);
+...
+```
+比较器可向下兼容？
+
+### 性能
+相邻的键聚集在同一块里，写硬盘前每块会独立地压缩
+如果不需要压缩：
+```
+leveldb::Options options;
+options.compression = leveldb::kNoCompression;
+... leveldb::DB::Open(options, name, ...) ....
+```
+如果options.cache是非NULL,就会使用缓存来存储常使用的非压缩块内容
+```
+#include "leveldb/cache.h"
+
+leveldb::Options options;
+options.cache = leveldb::NewLRUCache(100 * 1048576);  // 100MB cache
+leveldb::DB* db;
+leveldb::DB::Open(options, name, &db);
+... use the db ...
+delete db
+delete options.cache;
+```
+当需要大量读取时，应取消缓存
+```
+leveldb::ReadOptions options;
+options.fill_cache = false;
+leveldb::Iterator* it = db->NewIterator(options);
+for (it->SeekToFirst(); it->Valid(); it->Next()) {
+  ...
+}
+```
 
 
 
